@@ -1,0 +1,35 @@
+name: Build APK
+
+on:
+  push:
+    branches:
+      - main  # Change to the branch you want to trigger the build from
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.11  # Choose your Python version
+
+      - name: Install buildozer and dependencies
+        run: |
+          pip install buildozer
+          buildozer android debug  # Initialize buildozer configuration
+
+      - name: Build APK
+        run: |
+          buildozer android release  # Build the APK
+          cp -r .buildozer/android/platform/build-armeabi-v7a/dists/myapp/bin /github/workspace  # Copy APK to workspace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v2
+        with:
+          name: myapp
+          path: /github/workspace/bin/
