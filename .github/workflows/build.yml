@@ -26,10 +26,10 @@ jobs:
       - name: Build APK
         run: |
           buildozer android release  # Build the APK
-          cp -r .buildozer/android/platform/build-armeabi-v7a/dists/myapp/bin /github/workspace  # Copy APK to workspace
+          cp -r .buildozer/android/platform/build-armeabi-v7a/dists/bank_app.py/bin /github/workspace  # Copy APK to workspace
 
       - name: Upload APK
         uses: actions/upload-artifact@v2
         with:
-          name: myapp
+          name: bank_app.py
           path: /github/workspace/bin/
