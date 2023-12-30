@@ -13,3 +13,4 @@ Zawiera:
 - historię transakcji
 - kalkulator kredytu
 - prostą bazę danych stworzonych kont, wykonanych transakcji i stanu konta
+- proste ulepszenia estetyczne
