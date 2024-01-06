@@ -1,6 +1,12 @@
+import bcrypt
 import kivy
 import random
 import json
+import requests
+from kivy.uix.dropdown import DropDown
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.gridlayout import GridLayout
+from kivy.network.urlrequest import UrlRequest
 from kivy.app import App
 from datetime import datetime
 from kivy.logger import Logger
@@ -18,11 +24,22 @@ Window.clearcolor = (0.1, 0.1, 0.1, 1)
 Window.size = (400, 600)
 
 def basic_style(widget):
-    widget.size_hint = (None, None)
-    widget.size = (200, 40)
+    widget.size_hint = (1, None) 
+    widget.height = 40  
     widget.color = (1, 1, 1, 1)
+
     if isinstance(widget, Button):
         widget.background_color = (0.2, 0.6, 0.8, 1)
+        widget.bold = True
+        widget.font_size = '15sp'
+
+    if isinstance(widget, TextInput):
+        widget.background_color = (1, 1, 1, 0.3)
+        widget.foreground_color = (0, 0, 0, 1)
+        widget.multiline = False
+        widget.padding = [10, (widget.height - widget.font_size) / 2]
+
+
 
 class LoginScreen(Screen):
     def __init__(self, **kwargs):
@@ -36,7 +53,7 @@ class LoginScreen(Screen):
         self.add_widgets()
         
     def add_widgets(self):
-        layout = BoxLayout(orientation='vertical', padding=10, spacing=10)
+        layout = BoxLayout(orientation='vertical', size_hint=(1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.5})
         layout.add_widget(Label(text='Zaloguj się do swojego konta bankowego', font_size=20))
         basic_style(self.username)
         basic_style(self.password)
@@ -58,15 +75,23 @@ class LoginScreen(Screen):
             self.captcha_question, self.captcha_answer = self.generate_captcha()
             self.captcha_label.text = self.captcha_question
             self.captcha_input.text = ''
+
+            app = App.get_running_app()
+            app.log_login_attempt(self.username.text, success=False)
             return
+
         app = App.get_running_app()
         username = self.username.text
         password = self.password.text
-        if username in app.registered_users and app.registered_users[username] == password:
+        if app.check_password(username, password):
             app.current_username = username
             self.manager.current = 'main'
+
+            app.log_login_attempt(username, success=True)
         else:
             self.registration_status.text = 'Próba zalogowania nieudana. Sprawdź dane lub zarejestruj się.'
+
+            app.log_login_attempt(username, success=False)
 
     def generate_captcha(self):
         num1 = random.randint(1, 10)
@@ -81,7 +106,8 @@ class LoginScreen(Screen):
 class RegistrationScreen(Screen):
     def __init__(self, **kwargs):
         super(RegistrationScreen, self).__init__(**kwargs)
-        layout = BoxLayout(orientation='vertical', padding=10, spacing=10)
+        layout = BoxLayout(orientation='vertical', size_hint=(1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.5})
+
 
         layout.add_widget(Label(text='Zarejestruj nowe konto', font_size=20))
 
@@ -110,6 +136,14 @@ class RegistrationScreen(Screen):
         username = self.username.text
         password = self.password.text
 
+        if not self.is_valid_username(username):
+            self.registration_status.text = 'Nieprawidłowy login.'
+            return
+
+        if not self.is_valid_password(password):
+            self.registration_status.text = 'Nieprawidłowe hasło.'
+            return
+            
         if len(username) < 5:
             self.registration_status.text = 'Login jest za krótki.'
             return
@@ -122,14 +156,25 @@ class RegistrationScreen(Screen):
             self.registration_status.text = 'Ten login jest już zajęty.'
             return
 
-        App.get_running_app().register_user(username, password)
-        self.manager.get_screen('login').registration_status.text = 'Rejestracja udana'
-        self.manager.current = 'login'
+        if username not in App.get_running_app().registered_users:
+            App.get_running_app().register_user(username, password)
+            self.manager.get_screen('login').registration_status.text = 'Rejestracja udana'
+            self.manager.current = 'login'
+        
+    def is_valid_username(self, username):
+        return len(username) >= 5 and username.isalnum()
+
+    def is_valid_password(self, password):
+        return (len(password) >= 8 and 
+                any(char.isdigit() for char in password) and 
+                any(char.isalpha() for char in password) and 
+                any(not char.isalnum() for char in password))
 
 class MainScreen(Screen):
     def __init__(self, **kwargs):
         super(MainScreen, self).__init__(**kwargs)
-        layout = BoxLayout(orientation='vertical', padding=10, spacing=10)
+        layout = BoxLayout(orientation='vertical', size_hint=(1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.5})
+
         layout.add_widget(Label(text='Witamy na twoim koncie w AHE-banku', font_size=20))
 
         balance_button = Button(text='Balans na koncie', background_color=(0.2, 0.6, 0.8, 1))
@@ -147,6 +192,10 @@ class MainScreen(Screen):
         loan_calculator_button = Button(text='Kalkulator kredytu', background_color=(0.2, 0.6, 0.8, 1))
         loan_calculator_button.bind(on_press=lambda x: self.switch_to_screen('loan_calculator'))
         layout.add_widget(loan_calculator_button)
+        
+        currency_rates_button = Button(text='Sprawdź kursy walut',  background_color=(0.2, 0.6, 0.8, 1))
+        currency_rates_button.bind(on_press=lambda x: setattr(self.manager, 'current', 'currency_rates'))
+        layout.add_widget(currency_rates_button)
 
         change_password_button = Button(text='Zmień hasło', background_color=(0.2, 0.6, 0.8, 1))
         change_password_button.bind(on_press=lambda x: setattr(self.manager, 'current', 'change_password'))
@@ -175,7 +224,8 @@ class MainScreen(Screen):
 class BalanceScreen(Screen):
     def __init__(self, **kwargs):
         super(BalanceScreen, self).__init__(**kwargs)
-        layout = BoxLayout(orientation='vertical', padding=10, spacing=10)
+        layout = BoxLayout(orientation='vertical', size_hint=(1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.5})
+
         layout.add_widget(Label(text='Balans na koncie', font_size=20))
 
         self.balance_label = Label(text='0 coinsów')  # Instance attribute instead of id
@@ -190,9 +240,10 @@ class BalanceScreen(Screen):
 class HistoryScreen(Screen):
     def __init__(self, **kwargs):
         super(HistoryScreen, self).__init__(**kwargs)
-        layout = BoxLayout(orientation='vertical', padding=10, spacing=10)
+        layout = BoxLayout(orientation='vertical', size_hint=(1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.5})
+
         layout.add_widget(Label(text='Historia transakcji', font_size=20))
-        # Example transaction history
+
         self.history_label = Label(text='')
         layout.add_widget(self.history_label)
 
@@ -215,9 +266,10 @@ class HistoryScreen(Screen):
 class FundTransferScreen(Screen):
     def __init__(self, **kwargs):
         super(FundTransferScreen, self).__init__(**kwargs)
-        layout = BoxLayout(orientation='vertical', padding=10, spacing=10)
+        layout = BoxLayout(orientation='vertical', size_hint=(1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.5})
+
         
-        # Dodanie etykiety pokazującej aktualny stan konta
+
         self.balance_label = Label(text='Aktualny stan konta: ładowanie...')
         layout.add_widget(self.balance_label)
 
@@ -253,8 +305,13 @@ class FundTransferScreen(Screen):
     def validate_transfer(self, instance):
         account_number = self.account_input.text
         amount = self.amount_input.text
-        if len(account_number) != 24:
-            self.status_label.text = 'Numer konta powinien mieć 24 cyfry.'
+
+        if not self.is_valid_account_number(account_number):
+            self.status_label.text = 'Nieprawidłowy numer konta.'
+            return
+
+        if not self.is_valid_amount(amount):
+            self.status_label.text = 'Nieprawidłowa kwota.'
             return
 
         app = App.get_running_app()
@@ -289,11 +346,22 @@ class FundTransferScreen(Screen):
 
     def dismiss_popup(self, *args):
         self.popup.dismiss()
+        
+    def is_valid_account_number(self, account_number):
+        return len(account_number) == 24 and account_number.isdigit()
+
+    def is_valid_amount(self, amount):
+        try:
+            amount = float(amount)
+            return amount > 0
+        except ValueError:
+            return False
 
 class LoanCalculatorScreen(Screen):
     def __init__(self, **kwargs):
         super(LoanCalculatorScreen, self).__init__(**kwargs)
-        layout = BoxLayout(orientation='vertical', padding=10, spacing=10)
+        layout = BoxLayout(orientation='vertical', size_hint=(1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.5})
+
 
         layout.add_widget(Label(text='Kalkulator kredytu', font_size=20))
 
@@ -344,7 +412,8 @@ class ChangePasswordScreen(Screen):
         self.add_widgets()
         
     def add_widgets(self):
-        layout = BoxLayout(orientation='vertical', padding=10, spacing=10)
+        layout = BoxLayout(orientation='vertical', size_hint=(1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.5})
+
         layout.add_widget(Label(text='Zmień swoje hasło', font_size=20))
         basic_style(self.username_input)
         basic_style(self.old_password)
@@ -363,9 +432,11 @@ class ChangePasswordScreen(Screen):
         old_password = self.old_password.text
         new_password = self.new_password.text
 
-        if username in app.registered_users and app.registered_users[username] == old_password:
+        hashed_password = app.registered_users[username].encode('utf-8')
+        if bcrypt.checkpw(old_password.encode('utf-8'), hashed_password):
             if len(new_password) >= 8:
-                app.registered_users[username] = new_password
+                hashed_new_password = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                app.registered_users[username] = hashed_new_password
                 app.save_user_data()
                 app.current_username = None  
                 self.status_label.text = 'Hasło zmienione pomyślnie. Zaloguj się ponownie.'
@@ -378,7 +449,132 @@ class ChangePasswordScreen(Screen):
     def go_to_login(self, instance):
         self.manager.current = 'login'  
 
-        
+class CurrencyRatesScreen(Screen):
+    def __init__(self, **kwargs):
+        super(CurrencyRatesScreen, self).__init__(**kwargs)
+        self.layout = BoxLayout(orientation='vertical')
+
+        self.from_currency_layout = BoxLayout(orientation='horizontal', size_hint_y=None, height=40)
+        self.from_currency_input = TextInput(hint_text='Z waluty', size_hint=(0.7, 1))
+        self.amount_input = TextInput(hint_text='Ilość', input_filter='float', size_hint=(0.3, 1))
+
+        self.from_currency_layout.add_widget(self.from_currency_input)
+        self.from_currency_layout.add_widget(self.amount_input)
+        self.layout.add_widget(self.from_currency_layout)
+
+        self.to_currency_input = TextInput(hint_text='Na walutę', size_hint=(1, None), height=40)
+        self.layout.add_widget(self.to_currency_input)
+
+        self.from_currency_dropdown = DropDown()
+        self.to_currency_dropdown = DropDown()
+
+        self.from_currency_input.bind(on_text=self.update_currency_suggestions)
+        self.to_currency_input.bind(on_text=self.update_currency_suggestions)
+        self.from_currency_input.bind(focus=self.on_currency_input_focus)
+        self.to_currency_input.bind(focus=self.on_currency_input_focus)
+
+        self.rates_label = Label(text='Wprowadź waluty do porównania')
+        self.layout.add_widget(self.rates_label)
+
+
+        back_button = Button(text='Powrót', on_press=lambda x: setattr(self.manager, 'current', 'main'))
+        basic_style(back_button)
+        self.layout.add_widget(back_button)
+
+        self.add_widget(self.layout)
+
+        self.fetch_currency_list()
+
+
+    def on_currency_input_focus(self, instance, value):
+        if value: 
+            if instance is self.from_currency_input:
+                self.from_currency_dropdown.open(instance)
+            elif instance is self.to_currency_input:
+                self.to_currency_dropdown.open(instance)
+                
+                
+    def update_currency_suggestions(self, instance, text):
+        dropdown = self.from_currency_dropdown if instance is self.from_currency_input else self.to_currency_dropdown
+        dropdown.clear_widgets()
+        filtered_currencies = [currency for currency in self.available_currencies if text.lower() in currency.lower()]
+        for currency in filtered_currencies:
+            btn = Button(text=f"{currency} ({self.full_currency_names.get(currency, '')})", size_hint_y=None, height=30)
+            btn.bind(on_release=lambda btn: self.select_currency(btn.text.split(' ')[0], dropdown == self.to_currency_dropdown))
+            dropdown.add_widget(btn)
+        if text:
+            dropdown.open(instance)
+
+    def fetch_currency_list(self):
+        url = 'https://cdn.jsdelivr.net/gh/fawazahmed0/currency-api@1/latest/currencies.min.json'
+        UrlRequest(url, on_success=self.on_currency_list_success, on_failure=self.on_request_error, on_error=self.on_request_error)
+
+    def on_currency_list_success(self, request, result):
+
+        selected_currencies = [
+            'usd', 'eur', 'gbp', 'jpy', 'chf', 'aud', 'cad', 
+            'cny', 'hkd', 'inr', 'krw', 'sgd', 'nok', 'mxn', 
+            'rub', 'zar', 'try', 'brl', 'sar', 'thb', 'idr', 
+            'dkk', 'pln', 'twd', 'aed', 'myr', 'php', 'czk', 
+            'sek', 'nzd'
+        ]
+
+        self.full_currency_names = {k: v for k, v in result.items() if k in selected_currencies}
+        self.available_currencies = list(self.full_currency_names.keys())
+
+        for currency in self.available_currencies:
+            btn = Button(text=f"{currency.upper()} ({self.full_currency_names.get(currency, '')})", size_hint_y=None, height=30)
+            btn.bind(on_release=lambda btn: self.select_currency(btn.text.split(' ')[0]))
+            self.from_currency_dropdown.add_widget(btn)
+
+            btn_to = Button(text=f"{currency.upper()} ({self.full_currency_names.get(currency, '')})", size_hint_y=None, height=30)
+            btn_to.bind(on_release=lambda btn_to: self.select_currency(btn_to.text.split(' ')[0], to_currency=True))
+            self.to_currency_dropdown.add_widget(btn_to)
+
+    def on_request_error(self, request, error):
+        self.rates_label.text = 'Nie udało się pobrać stawek'
+            
+    def select_currency(self, currency, to_currency=False):
+        if to_currency:
+            self.to_currency_input.text = currency
+            self.to_currency_dropdown.dismiss()
+        else:
+            self.from_currency_input.text = currency
+            self.from_currency_dropdown.dismiss()
+
+
+        if self.from_currency_input.text and self.to_currency_input.text:
+            from_currency = self.from_currency_input.text.split(' ')[0]
+            to_currency = self.to_currency_input.text.split(' ')[0]
+            self.fetch_exchange_rate(from_currency, to_currency)
+
+    def fetch_exchange_rate(self, from_currency, to_currency):
+        from_currency_code = from_currency.lower()
+        to_currency_code = to_currency.lower()
+
+        if from_currency_code != to_currency_code:
+            url = f"https://cdn.jsdelivr.net/gh/fawazahmed0/currency-api@1/latest/currencies/{from_currency_code}/{to_currency_code}.json"
+            UrlRequest(url, on_success=self.on_exchange_rate_success, on_error=self.on_request_error, on_failure=self.on_request_error)
+        else:
+            self.rates_label.text = "Proszę wybrać dwie różne waluty."
+
+
+
+    def on_exchange_rate_success(self, request, result):
+        from_currency = self.from_currency_input.text.split(' ')[0].upper()
+        to_currency = self.to_currency_input.text.split(' ')[0].upper()
+        amount = float(self.amount_input.text) if self.amount_input.text else 1
+        exchange_rate = result.get(to_currency.lower())
+
+        if exchange_rate:
+            converted_amount = exchange_rate * amount
+            self.rates_label.text = f"{amount} {from_currency} = {converted_amount:.2f} {to_currency}"
+        else:
+            self.rates_label.text = "Nie znaleziono kursu wymiany."
+
+
+
+
 
 class BankApp(App):
     current_username = None
@@ -392,13 +588,18 @@ class BankApp(App):
         self.load_user_data() 
         
     def register_user(self, username, password):
-   
-        self.registered_users[username] = password
-        self.user_balances[username] = random.randint(500, 5000)
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+        self.registered_users[username] = hashed_password.decode('utf-8') 
+        self.user_balances[username] = random.randint(500, 5000)  # Losowanie salda
         self.user_transactions[username] = []
         self.data_changed = True
         self.save_user_data()
-        self.load_user_data()
+        
+    def check_password(self, username, password):
+        if username in self.registered_users:
+            hashed_password = self.registered_users[username]
+            return bcrypt.checkpw(password.encode('utf-8'), hashed_password)
+        return False
 
     def add_transaction(self, username, amount, timestamp):
 
@@ -431,8 +632,28 @@ class BankApp(App):
         sm.add_widget(FundTransferScreen(name='transfer'))
         sm.add_widget(LoanCalculatorScreen(name='loan_calculator'))
         sm.add_widget(ChangePasswordScreen(name='change_password'))
+        sm.add_widget(CurrencyRatesScreen(name='currency_rates'))
         sm.current = 'login'
         return sm
+        
+    def check_password(self, username, password):
+        if username in self.registered_users:
+            # Konwersja zahashowanego hasła na bytes przed użyciem w bcrypt
+            hashed_password = self.registered_users[username].encode('utf-8')
+            return bcrypt.checkpw(password.encode('utf-8'), hashed_password)
+        return False
+        
+    def save_user_data(self):
+        try:
+            with open('user_data.json', 'w') as file:
+                json.dump({
+                    'registered_users': self.registered_users,
+                    'user_balances': self.user_balances,
+                    'user_transactions': self.user_transactions
+                }, file)
+            self.data_changed = False
+        except IOError as e:
+            Logger.error(f"Error saving user data to file: {e}")
 
     def load_user_data(self):
         try:
@@ -442,9 +663,29 @@ class BankApp(App):
                 self.user_balances = data.get('user_balances', {})
                 self.user_transactions = data.get('user_transactions', {})
         except FileNotFoundError:
+            Logger.info("user_data.json not found, creating a new file.")
             self.registered_users = {}
             self.user_balances = {}
             self.user_transactions = {}
+        except json.JSONDecodeError as e:
+            Logger.error(f"Error decoding JSON from user_data.json: {e}")
+            # Inicjalizacja danych do domyślnych wartości w przypadku błędów
+            self.registered_users = {}
+            self.user_balances = {}
+            self.user_transactions = {}
+            
+    def log_login_attempt(self, username, success):
+        # Tworzenie rekordu próby logowania
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        status = 'successful' if success else 'failed'
+        log_message = f"Login attempt by '{username}' on {timestamp} was {status}."
+        
+        with open('login_history.json', 'a') as log_file:
+            json.dump({'timestamp': timestamp, 'username': username, 'status': status}, log_file)
+            log_file.write('\n')  # Nowa linia po każdym wpisie
+
+        Logger.info(log_message)
+
 
 if __name__ == '__main__':
     try:
